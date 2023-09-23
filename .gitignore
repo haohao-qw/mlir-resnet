@@ -11,6 +11,8 @@ CTestTestfile.cmake
 _deps
 # Prerequisites
 *.d
+*.mlir
+*.onnx
 
 # Compiled Object files
 *.slo
@@ -51,3 +53,4 @@ _deps
 **/lib
 **/build
 .hypothesis/
+**/*.mlir
