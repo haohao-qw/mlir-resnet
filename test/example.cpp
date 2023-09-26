@@ -164,6 +164,8 @@ int main(int argc, char **argv)
   // Apply Pass
   module = theModule;
   mlir::PassManager pm(module.get()->getName());
+  pm.addPass(mlir::EX::createConversionPass());
+
   mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
   optPM.addPass(mlir::EX::createShapeInferencePass());
   optPM.addPass(mlir::createCanonicalizerPass());

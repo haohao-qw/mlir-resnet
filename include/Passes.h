@@ -10,6 +10,8 @@ namespace mlir
     namespace EX
     {
         std::unique_ptr<Pass> createShapeInferencePass();
+
+        std::unique_ptr<mlir::Pass> createConversionPass();
     } // namespace t
 } // namespace mlir
 

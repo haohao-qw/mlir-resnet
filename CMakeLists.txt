@@ -44,8 +44,8 @@ get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 get_property(extension_libs GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
 
 set(LIBS
-    # ${dialect_libs}
-    # ${extension_libs}
+    ${dialect_libs}
+    ${extension_libs}
     MLIRIR
     MLIRSupport
     MLIRParser
@@ -66,6 +66,7 @@ set(SRC_LIST
     src/Dialect.cpp
     src/Ops.cpp
     src/ShapeInferPass.cpp
+    src/Conversion.cpp
 )
 set(TEST_NAME
     test/example.cpp
