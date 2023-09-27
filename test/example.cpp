@@ -46,6 +46,11 @@ mlir::Location loc(mlir::OpBuilder &builder, const FileLocation &loc)
                                    loc.column);
 }
 
+mlir::Location getNameLoc(mlir::OpBuilder &builder, const std::string &name)
+{
+  return mlir::NameLoc::get(builder.getStringAttr(name));
+}
+
 void Init()
 {
   mlir::registerAsmPrinterCLOptions();
@@ -62,8 +67,215 @@ void RegisterDialect(MLIRContext &context)
   context.loadAllAvailableDialects();
 }
 
+int Test()
+{
+  Init();
+  mlir::MLIRContext context;
+  RegisterDialect(context);
+
+  mlir::OpBuilder builder(&context);
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  mlir::ModuleOp theModule;
+
+  theModule = mlir::ModuleOp::create(builder.getUnknownLoc());
+
+  FileLocation localtion{"../test/test.txt", 0, 0};
+
+  // 设置插入点
+  builder.setInsertionPointToEnd(theModule.getBody());
+
+  // 构造lc，对应源文件位置信息
+  // auto lc = loc(builder, localtion);
+  auto lc = getNameLoc(builder, "main");
+
+  // 构造FuncOp,需要指定参数类型和返回值类型，返回类型需要和returnOp的返回值类型一致，否则生成的mlir文件无法被正确读取。
+  auto itype = mlir::RankedTensorType::get({1, 3, 224, 224}, builder.getF64Type());
+  llvm::SmallVector<mlir::Type, 2> InputArg(1, itype);
+  // 1*1000的返回
+  auto otype = mlir::RankedTensorType::get({1, 1000}, builder.getF64Type());
+  llvm::SmallVector<mlir::Type, 2> OutputArg(1, otype);
+  auto funcType = builder.getFunctionType(InputArg, OutputArg);
+  // auto funcType = builder.getFunctionType(InputArg, std::nullopt);
+  llvm::StringRef funname = "main";
+  auto funcOp = builder.create<mlir::func::FuncOp>(lc, funname, funcType);
+
+  // 获取funcop的body，以此设置插入点，之后的内容都会插入到funcop的body中
+  mlir::Block *efblock = funcOp.addEntryBlock();
+  builder.setInsertionPointToStart(efblock);
+
+  // 获取funcop的args
+  auto output = mlir::UnrankedTensorType::get(builder.getF32Type());
+  auto args = efblock->getArguments();
+  mlir::Value arg0 = args[0];
+  mlir::Value arg1 = args[0];
+  lc = getNameLoc(builder, "add");
+  auto argret = builder.create<AddOp>(lc, output, arg0, arg1);
+
+  std::vector<float> vec;
+  for (int i = 0; i < 2048; i++)
+  {
+    vec.push_back(static_cast<float>(i));
+  }
+  auto vec_shape = mlir::RankedTensorType::get({1, 8, 8, 32}, builder.getF32Type());
+  auto vec_attr = mlir::DenseElementsAttr::get(vec_shape, llvm::ArrayRef(vec));
+  lc = getNameLoc(builder, "constant");
+  auto vec_retop = builder.create<mlir::EX::ConstantOp>(lc, output, Attribute(vec_attr));
+  builder.create<AddOp>(lc, output, vec_retop, argret);
+
+  // ConstantOp
+  auto op_consant = builder.create<mlir::EX::ConstantOp>(lc, output, Attribute(vec_attr));
+
+  // ConvOp
+  ArrayRef<int64_t> stride_attr{1, 1};
+  auto stride = builder.getI64ArrayAttr(stride_attr);
+  ArrayRef<int64_t> kernel_shape_attr{3, 3};
+  auto kernel_shape = builder.getI64ArrayAttr(kernel_shape_attr);
+  ArrayRef<int64_t> padding_attr{1, 1, 1, 1};
+  auto padding = builder.getI64ArrayAttr(padding_attr);
+  ArrayRef<int64_t> dilations_attr{1, 1};
+  auto dilations = builder.getI64ArrayAttr(dilations_attr);
+  lc = getNameLoc(builder, "conv");
+  auto op_conv = builder.create<mlir::EX::ConvOp>(lc, output, op_consant, op_consant, op_consant, stride, kernel_shape, padding, 1, dilations, "NOTSET");
+
+  // ReluOp
+  lc = getNameLoc(builder, "relu");
+  auto op_relu = builder.create<mlir::EX::ReluOp>(lc, output, op_conv);
+
+  // MaxPoolOp
+  auto auto_pad = builder.getStringAttr("NOTSET");
+  auto ceil_mode = builder.getI64IntegerAttr(0);
+  auto count_include_pad = builder.getBoolAttr(false);
+  auto p = builder.getI64IntegerAttr(1);
+  auto pads = builder.getI64ArrayAttr(padding_attr);
+  auto storage_order = builder.getI64IntegerAttr(0);
+  lc = getNameLoc(builder, "maxpool");
+  auto op_maxpool = builder.create<mlir::EX::MaxPoolOp>(lc, output, output, op_relu, auto_pad, ceil_mode, dilations, kernel_shape, p, pads, storage_order, stride);
+
+  // GlobalAveragePoolOp
+  lc = getNameLoc(builder, "globalAveragepool");
+  auto op_globalaveragepool = builder.create<mlir::EX::GlobalAveragePoolOp>(lc, output, op_maxpool.getResult(0));
+
+  // FlattenOp
+  lc = getNameLoc(builder, "flatten");
+  auto op_flatten = builder.create<mlir::EX::FlattenOp>(lc, output, op_globalaveragepool);
+
+  // GemmOp
+  auto alpha = builder.getF64FloatAttr(1.0);
+  auto beta = builder.getF64FloatAttr(1.0);
+  auto tranA = builder.getI64IntegerAttr(0);
+  auto tranB = builder.getI64IntegerAttr(0);
+  auto retype = mlir::RankedTensorType::get({1, 1000}, builder.getF64Type());
+  lc = getNameLoc(builder, "gemm");
+  auto op_gemm = builder.create<mlir::EX::GemmOp>(lc, retype, op_flatten, op_flatten, op_flatten, alpha, beta, tranA, tranB);
+
+  // 构造ReturnOp，和funcop的返回值类型一致
+  mlir::ValueRange retVals{op_gemm};
+  lc = getNameLoc(builder, "end");
+  builder.create<mlir::func::ReturnOp>(lc, retVals);
+  // 设置插入点，funcop到此body结束
+  builder.setInsertionPointToEnd(efblock);
+  builder.setInsertionPointToEnd(theModule.getBody());
+
+  // Apply Pass
+  module = theModule;
+  mlir::PassManager pm(module.get()->getName());
+  // pm.addPass(mlir::EX::createConversionPass());
+
+  mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
+  optPM.addPass(mlir::EX::createShapeInferencePass());
+  optPM.addPass(mlir::createCanonicalizerPass());
+  if (mlir::failed(pm.run(*module)))
+    return 4;
+
+  // save file
+  std::error_code ec;
+  llvm::StringRef filename{"output.mlir"};
+  llvm::raw_fd_ostream file(filename, ec);
+  module->print(file);
+}
+
+int Test2()
+{
+  Init();
+  mlir::MLIRContext context;
+  RegisterDialect(context);
+
+  mlir::OpBuilder builder(&context);
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  mlir::ModuleOp theModule;
+
+  theModule = mlir::ModuleOp::create(builder.getUnknownLoc());
+
+  // 设置插入点
+  builder.setInsertionPointToEnd(theModule.getBody());
+
+  // 构造lc，对应源文件位置信息
+  auto lc = getNameLoc(builder, "main");
+
+  // 构造FuncOp,需要指定参数类型和返回值类型，返回类型需要和returnOp的返回值类型一致，否则生成的mlir文件无法被正确读取。
+  auto itype = mlir::RankedTensorType::get({1, 3, 224, 224}, builder.getF64Type());
+  llvm::SmallVector<mlir::Type, 2> InputArg(1, itype);
+  // 1*1000的返回
+  auto otype = mlir::RankedTensorType::get({1, 1000}, builder.getF64Type());
+  llvm::SmallVector<mlir::Type, 2> OutputArg(1, otype);
+  // auto funcType = builder.getFunctionType(InputArg, OutputArg);
+  auto funcType = builder.getFunctionType(InputArg, std::nullopt);
+  llvm::StringRef funname = "main";
+  auto funcOp = builder.create<mlir::func::FuncOp>(lc, funname, funcType);
+
+  // 获取funcop的body，以此设置插入点，之后的内容都会插入到funcop的body中
+  mlir::Block *efblock = funcOp.addEntryBlock();
+  builder.setInsertionPointToStart(efblock);
+
+  auto output = mlir::UnrankedTensorType::get(builder.getF32Type());
+
+  std::vector<float> vec;
+  for (int i = 0; i < 2048; i++)
+  {
+    vec.push_back(static_cast<float>(i));
+  }
+  auto vec_shape = mlir::RankedTensorType::get({1, 8, 8, 32}, builder.getF32Type());
+  auto vec_attr = mlir::DenseElementsAttr::get(vec_shape, llvm::ArrayRef(vec));
+
+  lc = getNameLoc(builder, "constant");
+  auto vec_retop = builder.create<mlir::EX::ConstantOp>(lc, output, Attribute(vec_attr));
+
+  lc = getNameLoc(builder, "add");
+  builder.create<AddOp>(lc, output, vec_retop, vec_retop);
+
+  lc = getNameLoc(builder, "constant");
+  auto op_consant = builder.create<mlir::EX::ConstantOp>(lc, output, Attribute(vec_attr));
+
+  lc = getNameLoc(builder, "end");
+  builder.create<mlir::func::ReturnOp>(lc);
+  // 设置插入点，funcop到此body结束
+  builder.setInsertionPointToEnd(efblock);
+  builder.setInsertionPointToEnd(theModule.getBody());
+
+  // Apply Pass
+  module = theModule;
+  mlir::PassManager pm(module.get()->getName());
+  pm.addPass(mlir::EX::createConversionPass());
+
+  mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
+  optPM.addPass(mlir::EX::createShapeInferencePass());
+  optPM.addPass(mlir::createCanonicalizerPass());
+  if (mlir::failed(pm.run(*module)))
+    return 4;
+
+  // save file
+  std::error_code ec;
+  llvm::StringRef filename{"output.mlir"};
+  llvm::raw_fd_ostream file(filename, ec);
+  module->print(file);
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
+  // Test();
+  // Test2();
+
   Init();
   mlir::MLIRContext context;
   RegisterDialect(context);

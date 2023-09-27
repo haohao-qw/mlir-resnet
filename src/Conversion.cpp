@@ -1,7 +1,8 @@
-#include "mlir/IR/BuiltinDialect.h"
 #include "Dialect.h"
 #include "Passes.h"
 
+#include "mlir/IR/BuiltinDialect.h"
+#include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -10,12 +11,16 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/Sequence.h"
 
+#include <vector>
 using namespace mlir;
+using namespace EX;
+
 static MemRefType convertTensorToMemRef(RankedTensorType type)
 {
     return MemRefType::get(type.getShape(), type.getElementType());
 }
 
+// 内存分配
 static Value insertAllocAndDealloc(MemRefType type, Location loc,
                                    PatternRewriter &rewriter)
 {
@@ -26,6 +31,7 @@ static Value insertAllocAndDealloc(MemRefType type, Location loc,
     dealloc->moveBefore(&parentBlock->back());
     return alloc;
 }
+
 using LoopIterationFn = function_ref<Value(
     OpBuilder &rewriter, ValueRange memRefOperands, ValueRange loopIvs)>;
 
@@ -33,7 +39,7 @@ static void lowerOpToLoops(Operation *op, ValueRange operands,
                            PatternRewriter &rewriter,
                            LoopIterationFn processIteration)
 {
-    auto tensorType = llvm::cast<RankedTensorType>((*op->result_type_begin()));
+    auto tensorType = mlir::RankedTensorType::get({1, 1}, rewriter.getF32Type());
     auto loc = op->getLoc();
 
     auto memRefType = convertTensorToMemRef(tensorType);
@@ -42,7 +48,7 @@ static void lowerOpToLoops(Operation *op, ValueRange operands,
     SmallVector<int64_t, 4> lowerBounds(tensorType.getRank(), /*Value=*/0);
     SmallVector<int64_t, 4> steps(tensorType.getRank(), /*Value=*/1);
     affine::buildAffineLoopNest(
-        rewriter, loc, lowerBounds, tensorType.getShape(), steps,
+        rewriter, loc, lowerBounds, memRefType.getShape(), steps,
         [&](OpBuilder &nestedBuilder, Location loc, ValueRange ivs)
         {
             Value valueToStore = processIteration(nestedBuilder, operands, ivs);
@@ -53,8 +59,129 @@ static void lowerOpToLoops(Operation *op, ValueRange operands,
     rewriter.replaceOp(op, alloc);
 }
 
+// 两种重写方式，都可以作为模式被应用：
+// 1.继承ConversionPattern
+// 2.继承OpRewritePattern
 namespace
 {
+
+    static mlir::RankedTensorType getRankedFromOp(Operation *op)
+    {
+        auto origin_type = op->getResult(0).getType();
+        auto ty = origin_type.cast<mlir::RankedTensorType>();
+        auto output_type = RankedTensorType::get(ty.getShape(), ty.getElementType());
+        return output_type;
+    }
+
+    // Add Conv Flatten GlobalAveragePool Relu Gemm算子到Linalg
+    struct AddLowering : public ConversionPattern
+    {
+        AddLowering(MLIRContext *ctx)
+            : ConversionPattern(EX::AddOp::getOperationName(), 1, ctx) {}
+
+        LogicalResult
+        matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                        ConversionPatternRewriter &rewriter) const final
+        {
+            // 由于TOSA有对应的表示，因此不用create，直接replace就行
+            auto output_type = getRankedFromOp(op);
+            std::vector<Value> vec;
+            for (auto in : op->getOperands())
+            {
+                vec.push_back(in);
+            }
+            rewriter.replaceOpWithNewOp<mlir::tosa::AddOp>(op, output_type, vec);
+            return success();
+        }
+    };
+
+    struct ConvLowering : public ConversionPattern
+    {
+        ConvLowering(MLIRContext *ctx)
+            : ConversionPattern(EX::ConvOp::getOperationName(), 1, ctx) {}
+
+        LogicalResult
+        matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                        ConversionPatternRewriter &rewriter) const final
+        {
+            auto loc = op->getLoc();
+            auto output_type = getRankedFromOp(op);
+            std::vector<NamedAttribute> attrs;
+            return success();
+        }
+    };
+
+    struct FlattenLowering : public ConversionPattern
+    {
+        FlattenLowering(MLIRContext *ctx)
+            : ConversionPattern(EX::FlattenOp::getOperationName(), 1, ctx) {}
+
+        LogicalResult
+        matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                        ConversionPatternRewriter &rewriter) const final
+        {
+            auto loc = op->getLoc();
+            return success();
+        }
+    };
+
+    struct GlobalAveragePoolLowering : public ConversionPattern
+    {
+        GlobalAveragePoolLowering(MLIRContext *ctx)
+            : ConversionPattern(EX::GlobalAveragePoolOp::getOperationName(), 1, ctx) {}
+
+        LogicalResult
+        matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                        ConversionPatternRewriter &rewriter) const final
+        {
+            auto loc = op->getLoc();
+            return success();
+        }
+    };
+
+    struct ReluLowering : public ConversionPattern
+    {
+        ReluLowering(MLIRContext *ctx)
+            : ConversionPattern(EX::ReluOp::getOperationName(), 1, ctx) {}
+
+        LogicalResult
+        matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                        ConversionPatternRewriter &rewriter) const final
+        {
+            auto loc = op->getLoc();
+            return success();
+        }
+    };
+
+    struct GemmLowering : public ConversionPattern
+    {
+        GemmLowering(MLIRContext *ctx)
+            : ConversionPattern(EX::GemmOp::getOperationName(), 1, ctx) {}
+
+        LogicalResult
+        matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                        ConversionPatternRewriter &rewriter) const final
+        {
+            auto loc = op->getLoc();
+            return success();
+        }
+    };
+
+    // struct ConstantLowering : public ConversionPattern
+    // {
+    //     ConstantLowering(MLIRContext *ctx)
+    //         : ConversionPattern(EX::ConstantOp::getOperationName(), 1, ctx) {}
+
+    //     LogicalResult
+    //     matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+    //                     ConversionPatternRewriter &rewriter) const final
+    //     {
+    //         auto loc = op->getLoc();
+    //         return success();
+    //     }
+    // };
+
+    // 二元算子 ConversionPattern
     template <typename BinaryOp, typename LoweredBinaryOp>
     struct BinaryOpLowering : public ConversionPattern
     {
@@ -73,18 +200,18 @@ namespace
                                typename BinaryOp::Adaptor binaryAdaptor(memRefOperands);
 
                                auto loadedLhs = builder.create<affine::AffineLoadOp>(
-                                   loc, binaryAdaptor.getLhs(), loopIvs);
+                                   loc, binaryAdaptor.getA(), memRefOperands);
                                auto loadedRhs = builder.create<affine::AffineLoadOp>(
-                                   loc, binaryAdaptor.getRhs(), loopIvs);
-
+                                   loc, binaryAdaptor.getB(), memRefOperands);
                                return builder.create<LoweredBinaryOp>(loc, loadedLhs,
                                                                       loadedRhs);
                            });
             return success();
         }
     };
-    using AddOpLowering = BinaryOpLowering<EX::AddOp, arith::AddFOp>;
+    // using AddOpLowering = BinaryOpLowering<EX::AddOp, arith::AddFOp>;
 
+    // constant 算子
     struct ConstantOpLowering : public OpRewritePattern<EX::ConstantOp>
     {
         using OpRewritePattern<EX::ConstantOp>::OpRewritePattern;
@@ -92,7 +219,7 @@ namespace
         LogicalResult matchAndRewrite(EX::ConstantOp op,
                                       PatternRewriter &rewriter) const final
         {
-            DenseElementsAttr constantValue = op.getValue().dyn_cast<DenseElementsAttr>();
+            DenseElementsAttr constantValue = op.getValue().dyn_cast<mlir::DenseElementsAttr>();
             Location loc = op.getLoc();
 
             auto tensorType = llvm::cast<RankedTensorType>(op.getType());
@@ -126,7 +253,6 @@ namespace
                         llvm::ArrayRef(indices));
                     return;
                 }
-
                 for (uint64_t i = 0, e = valueShape[dimension]; i != e; ++i)
                 {
                     indices.push_back(constantIndices[i]);
@@ -136,69 +262,49 @@ namespace
             };
 
             storeElements(/*dimension=*/0);
-
             rewriter.replaceOp(op, alloc);
             return success();
         }
     };
 
-    struct ReluOpLowering : public ConversionPattern
-    {
-        ReluOpLowering(MLIRContext *ctx)
-            : ConversionPattern(EX::ReluOp::getOperationName(), 1, ctx) {}
-
-        LogicalResult
-        matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                        ConversionPatternRewriter &rewriter) const final
-        {
-            auto loc = op->getLoc();
-            lowerOpToLoops(op, operands, rewriter,
-                           [loc](OpBuilder &builder, ValueRange memRefOperands,
-                                 ValueRange loopIvs)
-                           {
-                               EX::ReluOpAdaptor ReluAdaptor(memRefOperands);
-                               Value input = ReluAdaptor.getInput();
-
-                               SmallVector<Value, 2> reverseIvs(llvm::reverse(loopIvs));
-                               return builder.create<affine::AffineLoadOp>(loc, input,
-                                                                           reverseIvs);
-                           });
-            return success();
-        }
-    };
-
 } // namespace
 
+// 流程
 namespace
 {
-    struct ExConversionPass
-        : public PassWrapper<ExConversionPass, OperationPass<ModuleOp>>
+    struct EXConversion : public PassWrapper<EXConversion, OperationPass<ModuleOp>>
     {
-        MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ExConversionPass)
+        MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EXConversion)
 
         void getDependentDialects(DialectRegistry &registry) const override
         {
-            registry.insert<affine::AffineDialect, func::FuncDialect,
-                            memref::MemRefDialect>();
+            registry.insert<affine::AffineDialect, arith::ArithDialect, func::FuncDialect,
+                            memref::MemRefDialect, tosa::TosaDialect>();
         }
         void runOnOperation() final;
     };
 } // namespace
 
-void ExConversionPass::runOnOperation()
+void EXConversion::runOnOperation()
 {
+    // 定义转换目标
     ConversionTarget target(getContext());
-
-    target.addLegalDialect<affine::AffineDialect, BuiltinDialect,
-                           arith::ArithDialect, func::FuncDialect,
+    // 这里设置转换到的目标dialect都是合法的，也就是允许这些dialect出现在最终生成的mlir文件中
+    target.addLegalDialect<arith::ArithDialect, func::FuncDialect, affine::AffineDialect, tosa::TosaDialect,
                            memref::MemRefDialect>();
+    // 设置非法dialect，也就是不允许这些dialect出现在最终生成的mlir文件中，如果转换后还存在这些dialect的操作，会报错
+    target.addIllegalDialect<mlir::EX::EXDialect>();
+    // 可以设置部分op为合法，不进行转换
+    // 合法Op，本例子只有addop和constantop
+    target.addLegalOp<mlir::EX::GemmOp, mlir::EX::ConvOp, mlir::EX::FlattenOp, mlir::EX::GlobalAveragePoolOp,
+                      mlir::EX::ReluOp, mlir::func::FuncOp, mlir::EX::ConstantOp, mlir::func::ReturnOp>();
 
-    target.addIllegalDialect<EX::EXDialect>();
-
+    // 添加定义的转换模式
     RewritePatternSet patterns(&getContext());
-    patterns.add<AddOpLowering, ConstantOpLowering, ReluOpLowering>(
+    patterns.add<AddLowering>(
         &getContext());
 
+    // 执行转换
     if (failed(
             applyPartialConversion(getOperation(), target, std::move(patterns))))
         signalPassFailure();
@@ -206,5 +312,5 @@ void ExConversionPass::runOnOperation()
 
 std::unique_ptr<Pass> mlir::EX::createConversionPass()
 {
-    return std::make_unique<ExConversionPass>();
+    return std::make_unique<EXConversion>();
 }

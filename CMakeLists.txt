@@ -54,7 +54,7 @@ set(LIBS
     LLVMSupport
     MLIRAnalysis
     MLIRPass
-    # MLIRSideEffectInterfaces
+    MLIRSideEffectInterfaces
     MLIRTransforms
     )
 
