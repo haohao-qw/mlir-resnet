@@ -11,35 +11,41 @@ using namespace mlir::EX;
 
 void mlir::EX::ConvOp::shape_inference()
 {
-    getResult().setType(getInput().getType());
-}
-
-void mlir::EX::ReluOp::shape_inference()
-{
-    getResult().setType(getInput().getType());
+    auto type = getOperand(0).getType();
+    getResult().setType(type.cast<mlir::TensorType>());
+    llvm::outs() << "ConvOp shape_inferenc()\n";
 }
 
 void mlir::EX::AddOp::shape_inference()
 {
-    getResult().setType(getInput1().getType());
+    auto type = getOperand(0).getType();
+    getResult().setType(type.cast<mlir::TensorType>());
+    llvm::outs() << "AddOp shape_inferenc()\n";
+}
+
+void mlir::EX::ReluOp::shape_inference()
+{
+    llvm::outs() << "ReluOp shape_inferenc()\n";
 }
 
 void mlir::EX::GlobalAveragePoolOp::shape_inference()
 {
-    getResult().setType(getInputs().getType());
+    llvm::outs() << "GlobalAveragePoolOp shape_inferenc()\n";
 }
 
 void mlir::EX::FlattenOp::shape_inference()
 {
-    getResult().setType(getInput().getType());
+    llvm::outs() << "FlattenOp shape_inferenc()\n";
 }
 
 void mlir::EX::GemmOp::shape_inference()
 {
-    getResult().setType(getA().getType());
+    auto type = getOperand(0).getType();
+    getResult().setType(type.cast<mlir::TensorType>());
+    llvm::outs() << "GemmOp shape_inferenc()\n";
 }
 
 void mlir::EX::MaxPoolOp::shape_inference()
 {
-    // getResult().setType(getInput().getType());
+    llvm::outs() << "MaxPoolOp shape_inferenc()\n";
 }
